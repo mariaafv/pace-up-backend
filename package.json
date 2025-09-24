@@ -1,0 +1,9 @@
+{
+  "name": "pace-up-backend",
+  "version": "1.0.0",
+  "dependencies": {
+    "@google/generative-ai": "^0.15.0",
+    "@vercel/node": "^3.2.0",
+    "firebase-admin": "^12.2.0"
+  }
+}
