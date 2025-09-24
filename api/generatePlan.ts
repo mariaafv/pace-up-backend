@@ -48,7 +48,18 @@ export default async function handler(
     // --- LÓGICA DA IA (continua a mesma) ---
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
-    const prompt = `Gere um plano de treino para um usuário com os seguintes dados: ${JSON.stringify(profileData)}. Retorne apenas o JSON do plano.`;
+const prompt = `
+  Você é um coach de corrida especialista em IA chamado PaceUp.
+  Um novo usuário se cadastrou com o seguinte perfil:
+  - Experiência: ${profileData.experience}
+  - Objetivo Final: ${profileData.goal}
+  - Peso: ${profileData.weight || "não informado"} kg
+  - Altura: ${profileData.height || "não informado"} cm
+  - Dias disponíveis para correr: ${profileData.run_days.join(", ")} // <-- MUDANÇA AQUI
+
+  Sua tarefa é gerar um plano de treino...
+  ... (resto do prompt)
+`;
     const result = await model.generateContent(prompt);
     const aiResponse = result.response.text();
     const cleanedText = aiResponse.replace(/```json/g, "").replace(/```/g, "").trim();
