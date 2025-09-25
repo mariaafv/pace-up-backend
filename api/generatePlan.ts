@@ -10,7 +10,7 @@ try {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
-  }
+  } 
 } catch (e) {
   console.error('Firebase Admin Initialization Error:', e);
 }
