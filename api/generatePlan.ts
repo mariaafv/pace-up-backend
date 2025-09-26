@@ -1,7 +1,7 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import * as admin from 'firebase-admin';
 import { createClient } from '@supabase/supabase-js';
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // --- FIREBASE ADMIN ---
 try {
@@ -15,26 +15,38 @@ try {
   console.error('Firebase Admin Initialization Error:', e);
 }
 
-// --- SUPABASE ADMIN ---
+// --- SUPABASE ---
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-// --- OPENAI ---
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY as string,
-});
+// --- UTILS ---
+interface WorkoutDay {
+  day: string;
+  type: string;
+  duration_minutes: number;
+  description: string;
+}
 
+interface WorkoutPlan {
+  week1: WorkoutDay[];
+  week2: WorkoutDay[];
+  week3: WorkoutDay[];
+  week4: WorkoutDay[];
+}
+
+// --- HANDLER ---
 export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method !== 'POST') {
     return response.status(405).json({ error: 'Método não permitido.' });
   }
 
   let userId: string | undefined;
+  let aiResponse: string | undefined;
 
   try {
-    // 1️⃣ Verifica token do Firebase
+    // 1️⃣ Verifica token Firebase
     const firebaseToken = request.headers.authorization?.split('Bearer ')[1];
     if (!firebaseToken) return response.status(401).json({ error: 'Nenhum token fornecido.' });
 
@@ -44,67 +56,59 @@ export default async function handler(request: VercelRequest, response: VercelRe
     const { profileData } = request.body;
     if (!profileData) return response.status(400).json({ error: 'profileData é obrigatório.' });
 
-    // 2️⃣ Prompt para gerar plano mensal
-    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      {
-        role: "system",
-        content: "Você é um coach de corrida especialista em IA chamado PaceUp.",
-      } as OpenAI.Chat.ChatCompletionSystemMessageParam,
-      {
-        role: "user",
-        content: `
-Um novo usuário se cadastrou com o seguinte perfil:
+    // 2️⃣ Prompt para Gemini
+    const prompt = `
+Você é um coach de corrida especialista em IA chamado PaceUp.
+Novo usuário:
 - Experiência: ${profileData.experience}
-- Objetivo Final: ${profileData.goal}
+- Objetivo: ${profileData.goal}
 - Peso: ${profileData.weight || "não informado"} kg
 - Altura: ${profileData.height || "não informado"} cm
-- Dias disponíveis para correr: ${profileData.run_days.join(", ")}
+- Dias disponíveis: ${profileData.run_days.join(", ")}
 
-Sua tarefa é criar um plano de corrida **completo de 4 semanas (week1 a week4)**.
-Para cada dia inclua:
+Crie **plano de corrida completo para 4 semanas** (week1 a week4).
+Cada dia deve conter:
 - "day": Nome do dia da semana em pt-BR
-- "type": Tipo do treino (Ex: Caminhada, Corrida leve, Intervalado, Descanso, Descanso ativo)
-- "duration_minutes": número inteiro em minutos
-- "description": descrição detalhada com dicas de respiração, postura e motivação.
+- "type": Tipo do treino (Caminhada, Corrida leve, Intervalado, Descanso, Descanso ativo)
+- "duration_minutes": inteiro em minutos
+- "description": dicas de respiração, postura e motivação
 
-Formato obrigatório de saída:
+Retorne APENAS o JSON:
 {
-  "week1": [ { "day": "...", "type": "...", "duration_minutes": 30, "description": "..." }, ... ],
-  "week2": [...],
-  "week3": [...],
-  "week4": [...]
+  "week1": [ {...} ],
+  "week2": [ {...} ],
+  "week3": [ {...} ],
+  "week4": [ {...} ]
 }
-`,
-      } as OpenAI.Chat.ChatCompletionUserMessageParam,
-    ];
+`;
 
-    // 3️⃣ Chamada ao OpenAI
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // pode usar "gpt-4o-mini" para testes
-      response_format: { type: "json_object" }, // força JSON válido
-      messages,
+    // 3️⃣ Inicializa Gemini
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+
+    // 4️⃣ Gera o plano
+    const result = await model.generateContent(prompt);
+    aiResponse = result.response.text();
+    if (!aiResponse) throw new Error("A IA não retornou conteúdo.");
+
+    // 5️⃣ Extrai JSON
+    const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("Nenhum JSON válido encontrado na resposta da IA.");
+
+    const workoutPlanRaw: WorkoutPlan = JSON.parse(jsonMatch[0]);
+
+    // --- VALIDAÇÃO SIMPLES ---
+    ['week1', 'week2', 'week3', 'week4'].forEach(week => {
+      if (!workoutPlanRaw[week as keyof WorkoutPlan]) {
+        workoutPlanRaw[week as keyof WorkoutPlan] = [];
+      }
     });
 
-    const aiResponse = completion.choices[0].message?.content;
-    if (!aiResponse) throw new Error("Resposta vazia da OpenAI.");
-
-    let workoutPlanJson;
-    try {
-      workoutPlanJson = JSON.parse(aiResponse);
-    } catch {
-      throw new Error("Erro ao parsear JSON da IA.");
-    }
-
-    // 4️⃣ Validação mínima do plano
-    if (!workoutPlanJson.week1 || !workoutPlanJson.week2 || !workoutPlanJson.week3 || !workoutPlanJson.week4) {
-      throw new Error("Plano incompleto gerado pela IA.");
-    }
-
-    // 5️⃣ Salva no Supabase
+    // 6️⃣ Salva no Supabase
     const finalUserData = {
       id: userId,
       ...profileData,
-      workout_plan: workoutPlanJson,
+      workout_plan: workoutPlanRaw,
       planGenerationError: null,
       rawAIResponse: null,
     };
@@ -116,7 +120,7 @@ Formato obrigatório de saída:
     return response.status(200).json({
       success: true,
       message: "Plano gerado com sucesso!",
-      workout_plan: workoutPlanJson,
+      workout_plan: workoutPlanRaw,
     });
 
   } catch (error: any) {
@@ -126,7 +130,7 @@ Formato obrigatório de saída:
       await supabaseAdmin.from('profiles').upsert({
         id: userId,
         planGenerationError: error.message,
-        rawAIResponse: error.stack || "Nenhuma resposta recebida da IA."
+        rawAIResponse: aiResponse || "Nenhuma resposta recebida da IA."
       });
     }
 
