@@ -1,19 +1,14 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import * as admin from 'firebase-admin';
 import { createClient } from '@supabase/supabase-js';
-import { GoogleAuth } from 'google-auth-library';
 
 // --- INICIALIZAÇÕES ---
-let serviceAccountCredentials: any;
-
 try {
-  serviceAccountCredentials = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string);
-  
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string);
   if (!admin.apps.length) {
     admin.initializeApp({
-      credential: admin.credential.cert(serviceAccountCredentials),
+      credential: admin.credential.cert(serviceAccount),
     });
-    console.log('Firebase Admin Initialized Successfully.');
   }
 } catch (e) {
   console.error('Firebase Admin Initialization Error:', e);
@@ -41,92 +36,76 @@ function generateMonthDays(): string[] {
   return days;
 }
 
-// --- FUNÇÃO PARA CHAMAR VERTEX AI DIRETAMENTE ---
-async function callVertexAI(prompt: string): Promise<string> {
-  try {
-    console.log('Obtendo token de acesso...');
-    
-    // Usar GoogleAuth para obter token
-    const auth = new GoogleAuth({
-      credentials: serviceAccountCredentials,
-      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-    });
-    
-    const accessToken = await auth.getAccessToken();
-    const projectId = serviceAccountCredentials.project_id;
-    
-    console.log(`Chamando VertexAI para projeto: ${projectId}`);
-    
-    // URL da API do Vertex AI
-    const url = `https://us-central1-aiplatform.googleapis.com/v1/projects/${projectId}/locations/us-central1/publishers/google/models/gemini-1.5-flash:generateContent`;
-    
-    const requestBody = {
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: prompt
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        maxOutputTokens: 8192,
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40
-      },
-      safetySettings: [
-        {
-          category: 'HARM_CATEGORY_HARASSMENT',
-          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-        },
-        {
-          category: 'HARM_CATEGORY_HATE_SPEECH',
-          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-        },
-        {
-          category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-        },
-        {
-          category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
-          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-        }
-      ]
-    };
-
-    console.log('Fazendo requisição para VertexAI...');
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Erro da API:', errorText);
-      throw new Error(`Vertex AI Error: ${response.status} ${response.statusText} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    console.log('Resposta recebida com sucesso');
-    
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-      throw new Error('VertexAI não retornou texto válido');
-    }
-    
-    return text;
-    
-  } catch (error: any) {
-    console.error('Erro em callVertexAI:', error.message);
-    throw error;
+// --- FUNÇÃO PARA CHAMAR GOOGLE AI STUDIO DIRETAMENTE ---
+async function callGoogleAI(prompt: string): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY não configurada');
   }
+  
+  // Modelos para tentar em ordem
+  const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'];
+  
+  for (const model of models) {
+    try {
+      console.log(`Tentando modelo: ${model}`);
+      
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: prompt
+                }
+              ]
+            }
+          ],
+          generationConfig: {
+            maxOutputTokens: 8192,
+            temperature: 0.7
+          }
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        
+        if (text) {
+          console.log(`✅ Sucesso com modelo: ${model}`);
+          return text;
+        }
+      } else {
+        const errorText = await response.text();
+        console.log(`❌ Modelo ${model} falhou: ${response.status}`);
+        
+        // Se for 404, tentar próximo modelo
+        if (response.status === 404) {
+          continue;
+        } else {
+          throw new Error(`Google AI Error: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+      }
+    } catch (error: any) {
+      console.log(`Erro com modelo ${model}:`, error.message);
+      
+      // Se for o último modelo, lançar erro
+      if (model === models[models.length - 1]) {
+        throw error;
+      }
+      continue;
+    }
+  }
+  
+  throw new Error('Nenhum modelo do Google AI funcionou');
 }
 
 // --- HANDLER PRINCIPAL ---
@@ -136,26 +115,16 @@ export default async function handler(request: VercelRequest, response: VercelRe
   }
 
   let userId: string | undefined;
-  let aiResponseText: string | undefined;
+  let aiResponse: string | undefined;
 
   try {
-    console.log('=== INÍCIO DO PROCESSAMENTO ===');
-    
-    // Verificar credenciais
-    if (!serviceAccountCredentials) {
-      throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY não configurada corretamente');
-    }
-    
-    console.log(`Usando projeto: ${serviceAccountCredentials.project_id}`);
-    console.log(`Service account: ${serviceAccountCredentials.client_email}`);
+    console.log('=== PROCESSAMENTO INICIADO ===');
 
-    // --- Autenticação do usuário ---
     const firebaseToken = request.headers.authorization?.split('Bearer ')[1];
     if (!firebaseToken) return response.status(401).json({ error: 'Nenhum token fornecido.' });
 
     const decodedToken = await admin.auth().verifyIdToken(firebaseToken);
     userId = decodedToken.uid;
-    console.log(`Usuário autenticado: ${userId}`);
 
     const { profileData } = request.body;
     if (!profileData) return response.status(400).json({ error: 'profileData é obrigatório.' });
@@ -183,20 +152,15 @@ O formato deve ser:
 }
 `;
 
-    console.log('Chamando VertexAI...');
-    aiResponseText = await callVertexAI(prompt);
+    console.log('Chamando Google AI...');
+    aiResponse = await callGoogleAI(prompt);
     
-    if (!aiResponseText) {
-      throw new Error("A IA não retornou conteúdo válido.");
-    }
+    if (!aiResponse) throw new Error("A IA não retornou conteúdo.");
 
-    console.log('Resposta recebida, processando JSON...');
-    const jsonMatch = aiResponseText.match(/\{[\s\S]*\}/);
+    const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("Nenhum JSON válido encontrado na resposta da IA.");
-    
     const workoutPlanJson = JSON.parse(jsonMatch[0]);
 
-    // Salvar no Supabase
     const finalUserData = {
       id: userId,
       ...profileData,
@@ -209,24 +173,17 @@ O formato deve ser:
     if (error) throw error;
 
     console.log(`✅ Plano gerado com sucesso para o usuário ${userId}`);
-    return response.status(200).json({ 
-      success: true, 
-      message: 'Plano gerado com sucesso!',
-      workout_plan: workoutPlanJson
-    });
+    return response.status(200).json({ success: true, message: 'Plano gerado com sucesso!', workout_plan: workoutPlanJson });
 
   } catch (error: any) {
     console.error("❌ Erro na Vercel Function:", error.message);
-    console.error("Stack:", error.stack);
-    
     if (userId) {
       await supabaseAdmin.from('profiles').upsert({
         id: userId,
         planGenerationError: error.message,
-        rawAIResponse: aiResponseText || "Nenhuma resposta recebida da IA."
+        rawAIResponse: aiResponse || "Nenhuma resposta recebida da IA."
       });
     }
-    
     return response.status(500).json({ error: error.message });
   }
 }
