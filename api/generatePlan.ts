@@ -80,7 +80,7 @@ Formato obrigatório de saída:
 
     // 3️⃣ Chamada ao OpenAI
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o", // pode usar "gpt-4o-mini" para testes
+      model: "gpt-4o-mini", // pode usar "gpt-4o-mini" para testes
       response_format: { type: "json_object" }, // força JSON válido
       messages,
     });
