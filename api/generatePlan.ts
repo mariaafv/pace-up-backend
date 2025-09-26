@@ -1,57 +1,40 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import * as admin from 'firebase-admin';
 import { createClient } from '@supabase/supabase-js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import OpenAI from "openai";
 
-// --- INICIALIZAÇÃO FIREBASE ADMIN ---
+// --- FIREBASE ADMIN ---
 try {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string);
   if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
-  } 
+  }
 } catch (e) {
   console.error('Firebase Admin Initialization Error:', e);
 }
 
-// --- INICIALIZAÇÃO SUPABASE ---
+// --- SUPABASE ADMIN ---
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-// --- AUX: Gera todos os dias do mês em pt-BR ---
-function generateMonthDays(): string[] {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth();
+// --- OPENAI ---
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY as string,
+});
 
-  const startDate = new Date(year, month, 1);
-  const endDate = new Date(year, month + 1, 0);
-
-  const formatter = new Intl.DateTimeFormat('pt-BR', { weekday: 'long' });
-  const days: string[] = [];
-
-  for (let d = startDate.getDate(); d <= endDate.getDate(); d++) {
-    const date = new Date(year, month, d);
-    const dayName = formatter.format(date);
-    days.push(dayName.charAt(0).toUpperCase() + dayName.slice(1)); // Ex: "Segunda"
-  }
-  return days;
-}
-
-// --- HANDLER ---
 export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method !== 'POST') {
     return response.status(405).json({ error: 'Método não permitido.' });
   }
 
   let userId: string | undefined;
-  let aiResponse: string | undefined;
 
   try {
-    // 1️⃣ Verifica token Firebase
+    // 1️⃣ Verifica token do Firebase
     const firebaseToken = request.headers.authorization?.split('Bearer ')[1];
     if (!firebaseToken) return response.status(401).json({ error: 'Nenhum token fornecido.' });
 
@@ -61,12 +44,15 @@ export default async function handler(request: VercelRequest, response: VercelRe
     const { profileData } = request.body;
     if (!profileData) return response.status(400).json({ error: 'profileData é obrigatório.' });
 
-    // 2️⃣ Gera dias do mês
-    const monthDays = generateMonthDays();
-
-    // 3️⃣ Prompt aprimorado para IA
-    const prompt = `
-Você é um coach de corrida especialista em IA chamado PaceUp.
+    // 2️⃣ Prompt para gerar plano mensal
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+      {
+        role: "system",
+        content: "Você é um coach de corrida especialista em IA chamado PaceUp.",
+      } as OpenAI.Chat.ChatCompletionSystemMessageParam,
+      {
+        role: "user",
+        content: `
 Um novo usuário se cadastrou com o seguinte perfil:
 - Experiência: ${profileData.experience}
 - Objetivo Final: ${profileData.goal}
@@ -74,40 +60,47 @@ Um novo usuário se cadastrou com o seguinte perfil:
 - Altura: ${profileData.height || "não informado"} cm
 - Dias disponíveis para correr: ${profileData.run_days.join(", ")}
 
-Sua tarefa é criar um plano completo de treino para **TODO O MÊS**, dividido em 4 semanas (week1 a week4), usando os dias da semana corretos.
-Para cada dia:
-- Se for dia de treino, varie entre caminhada, corrida leve, corrida moderada, HIIT leve.
-- Inclua alongamento inicial e final.
-- Ajuste a intensidade e duração conforme o nível de experiência do usuário.
-- Se for dia de descanso, indique se será descanso ativo (ex: caminhada leve ou ioga) ou completo.
-- Adicione notas motivacionais e dicas de postura.
-- Use o seguinte formato JSON estrito (não inclua texto fora do JSON):
+Sua tarefa é criar um plano de corrida **completo de 4 semanas (week1 a week4)**.
+Para cada dia inclua:
+- "day": Nome do dia da semana em pt-BR
+- "type": Tipo do treino (Ex: Caminhada, Corrida leve, Intervalado, Descanso, Descanso ativo)
+- "duration_minutes": número inteiro em minutos
+- "description": descrição detalhada com dicas de respiração, postura e motivação.
+
+Formato obrigatório de saída:
 {
-  "week1": [{"day": "Segunda", "type": "Corrida leve", "duration_minutes": 20, "description": "Descrição detalhada"}],
+  "week1": [ { "day": "...", "type": "...", "duration_minutes": 30, "description": "..." }, ... ],
   "week2": [...],
   "week3": [...],
   "week4": [...]
 }
+`,
+      } as OpenAI.Chat.ChatCompletionUserMessageParam,
+    ];
 
-Comece com '{' e termine com '}'.
-`;
+    // 3️⃣ Chamada ao OpenAI
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o", // pode usar "gpt-4o-mini" para testes
+      response_format: { type: "json_object" }, // força JSON válido
+      messages,
+    });
 
-    // 4️⃣ Inicializa o cliente da IA
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
+    const aiResponse = completion.choices[0].message?.content;
+    if (!aiResponse) throw new Error("Resposta vazia da OpenAI.");
 
-    // 5️⃣ Gera o plano
-    const result = await model.generateContent(prompt);
-    aiResponse = result.response.text();
-    if (!aiResponse) throw new Error("A IA não retornou conteúdo.");
+    let workoutPlanJson;
+    try {
+      workoutPlanJson = JSON.parse(aiResponse);
+    } catch {
+      throw new Error("Erro ao parsear JSON da IA.");
+    }
 
-    // 6️⃣ Extrai apenas JSON
-    const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("Nenhum JSON válido encontrado na resposta da IA.");
+    // 4️⃣ Validação mínima do plano
+    if (!workoutPlanJson.week1 || !workoutPlanJson.week2 || !workoutPlanJson.week3 || !workoutPlanJson.week4) {
+      throw new Error("Plano incompleto gerado pela IA.");
+    }
 
-    const workoutPlanJson = JSON.parse(jsonMatch[0]);
-
-    // 7️⃣ Salva no Supabase
+    // 5️⃣ Salva no Supabase
     const finalUserData = {
       id: userId,
       ...profileData,
@@ -119,17 +112,21 @@ Comece com '{' e termine com '}'.
     const { error } = await supabaseAdmin.from('profiles').upsert(finalUserData);
     if (error) throw error;
 
-    console.log(`Plano gerado com sucesso para o usuário ${userId}`);
-    return response.status(200).json({ success: true, message: 'Plano gerado com sucesso!', workout_plan: workoutPlanJson });
+    console.log(`✅ Plano gerado com sucesso para o usuário ${userId}`);
+    return response.status(200).json({
+      success: true,
+      message: "Plano gerado com sucesso!",
+      workout_plan: workoutPlanJson,
+    });
 
   } catch (error: any) {
-    console.error("Erro na Vercel Function:", error.message);
+    console.error("❌ Erro na Vercel Function:", error.message);
 
     if (userId) {
       await supabaseAdmin.from('profiles').upsert({
         id: userId,
         planGenerationError: error.message,
-        rawAIResponse: aiResponse || "Nenhuma resposta recebida da IA."
+        rawAIResponse: error.stack || "Nenhuma resposta recebida da IA."
       });
     }
 

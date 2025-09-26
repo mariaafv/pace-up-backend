@@ -5,6 +5,7 @@
     "@google/generative-ai": "^0.15.0",
     "@supabase/supabase-js": "^2.57.4",
     "@vercel/node": "^3.2.0",
-    "firebase-admin": "^12.2.0"
+    "firebase-admin": "^12.2.0",
+    "openai": "^5.23.0"
   }
 }
