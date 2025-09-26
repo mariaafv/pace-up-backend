@@ -1,10 +1,11 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import * as admin from 'firebase-admin';
 import { createClient } from '@supabase/supabase-js';
-// MUDANÇA: Importa a biblioteca da Vertex AI
 import { VertexAI } from '@google-cloud/vertexai';
+// MUDANÇA 1: Importa a GoogleAuth
+import { GoogleAuth } from 'google-auth-library';
 
-// --- INICIALIZAÇÕES ---
+// --- INICIALIZAÇÃO FIREBASE ADMIN ---
 try {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string);
   if (!admin.apps.length) {
@@ -16,17 +17,24 @@ try {
   console.error('Firebase Admin Initialization Error:', e);
 }
 
+// --- INICIALIZAÇÃO SUPABASE ADMIN ---
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-// MUDANÇA: Inicializa o cliente Vertex AI forçando a região
+// --- MUDANÇA 2: Inicialização da Autenticação e do Cliente Vertex AI ---
+const auth = new GoogleAuth({
+  credentials: JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string),
+});
+
 const vertex_ai = new VertexAI({
   project: process.env.GOOGLE_PROJECT_ID as string,
   location: 'us-central1',
+  googleAuthOptions: {
+    credentials: JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string),
+  },
 });
-
 // --- HANDLER PRINCIPAL ---
 export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method !== 'POST') {
