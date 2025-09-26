@@ -94,7 +94,7 @@ Comece com '{' e termine com '}'.
 
     // 4️⃣ Inicializa o cliente da IA
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
 
     // 5️⃣ Gera o plano
     const result = await model.generateContent(prompt);
