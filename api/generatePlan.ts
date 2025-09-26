@@ -4,13 +4,15 @@ import { createClient } from '@supabase/supabase-js';
 import { VertexAI } from '@google-cloud/vertexai';
 import { GoogleAuth } from 'google-auth-library';
 
-// --- INICIALIZAÇÕES ---
+// --- INITIALIZATIONS ---
+// The Firebase Admin SDK is initialized once with the service account key.
+// This is the only place credentials need to be handled.
 try {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string);
   if (!admin.apps.length) {
     admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
+      credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY as string)),
     });
+    console.log('Firebase Admin Initialized Successfully.');
   }
 } catch (e) {
   console.error('Firebase Admin Initialization Error:', e);
@@ -20,6 +22,13 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_URL as string,
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
+
+// The VertexAI client will automatically find the credentials from firebase-admin
+// when running in a cloud environment.
+const vertex_ai = new VertexAI({
+  project: process.env.GOOGLE_PROJECT_ID as string,
+  location: 'us-central1',
+});
 
 // --- HANDLER PRINCIPAL ---
 export default async function handler(request: VercelRequest, response: VercelResponse) {
