@@ -59,6 +59,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
       O formato da resposta deve ser um objeto JSON válido contendo as 4 semanas.
       As chaves do JSON devem ser: "week1", "week2", "week3", "week4".
       Cada semana deve ser um array de objetos, onde cada objeto representa um dia e contém as chaves: "day", "type", "duration_minutes", e "description".
+      **IMPORTANTE: Todo o texto dentro do JSON, incluindo os valores para as chaves "day", "type" e "description", deve ser em português do Brasil.**
     `;
 
     console.log('Chamando API da OpenAI...');
